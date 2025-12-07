@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.processor = None
         self.current_plots = {}  # parameter_name: (x_data, y_data, color)
+        self.current_time_type = None
         self.init_ui()
         
     def init_ui(self):
@@ -61,6 +62,7 @@ class MainWindow(QMainWindow):
         self.plot_widget.time_type_changed.connect(self.on_time_type_changed)
         self.plot_widget.cursor_position_changed.connect(self.on_cursor_position_changed)
         self.plot_widget.active_plot_changed.connect(self.on_active_plot_changed)
+        self.current_time_type = self.plot_widget.time_type_combo.currentText()
         
         # Док-виджет для дерева параметров
         dock_widget = QDockWidget("Параметры MAVLink", self)
@@ -225,6 +227,8 @@ class MainWindow(QMainWindow):
             current_time_type = self.plot_widget.time_type_combo.currentText()
             self.plot_widget.time_type_combo.clear()
             self.plot_widget.time_type_combo.addItems(time_types)
+
+            self.plot_widget.time_offset = getattr(self.processor, "time_offset", 0.0)
             
             # Восстанавливаем предыдущий выбор времени, если он доступен
             if current_time_type in time_types:
@@ -259,8 +263,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Предупреждение", "Сначала откройте файл лога")
             return
         
-        time_type = self.plot_widget.time_type_combo.currentText()
-        x_data, y_data = self.processor.get_parameter_data(parameter_name, time_type)
+        x_data, y_data = self.processor.get_parameter_data(parameter_name, 'TimeUS')
         
         if x_data is not None and y_data is not None and len(x_data) > 0:
             self.plot_widget.add_plot(parameter_name, x_data, y_data, color)
@@ -317,30 +320,10 @@ class MainWindow(QMainWindow):
         if self.processor is None or not self.current_plots:
             return
         
-        # Обновляем все активные графики с новым типом времени
-        updated_plots = []
-        failed_plots = []
-        
-        for parameter_name in list(self.current_plots.keys()):
-            x_data, y_data = self.processor.get_parameter_data(parameter_name, time_type)
-            
-            if x_data is not None and y_data is not None and len(x_data) > 0:
-                _, _, color = self.current_plots[parameter_name]
-                self.current_plots[parameter_name] = (x_data, y_data, color)
-                self.plot_widget.update_plot_data(parameter_name, x_data, y_data)
-                updated_plots.append(parameter_name)
-            else:
-                # Если для этого типа времени нет данных, убираем график
-                self.remove_plot(parameter_name)
-                failed_plots.append(parameter_name)
-        
-        if updated_plots:
-            self.status_bar.showMessage(f"Обновлено {len(updated_plots)} графиков с временем '{time_type}'")
-        
-        if failed_plots:
-            QMessageBox.warning(self, "Данные недоступны", 
-                              f"Для {len(failed_plots)} графиков нет данных с временем '{time_type}'. "
-                              f"Графики были скрыты.")
+        self.current_time_type = time_type
+        # Обновляем подпись даты GPS на панели графиков
+        self.plot_widget.update_gps_date_label()
+
     
     def on_cursor_position_changed(self, x_pos, parameter_values):
         """Обработка изменения позиции курсора"""
@@ -348,60 +331,54 @@ class MainWindow(QMainWindow):
             self.cursor_info_text.setText("Нет данных для отображения")
             return
 
-        time_type = self.plot_widget.time_type_combo.currentText()
+        offset = self.processor.time_offset if self.processor else 0.0
 
         # Преобразование x_pos в datetime
         def to_dt(ts):
-            """Конвертирует timestamp → UTC datetime (aware), безопасно."""
+            """Конвертирует timestamp → GPS"""
             try:
-                return datetime.fromtimestamp(ts, tz=timezone.utc)
+                return datetime.fromtimestamp(ts + offset, tz=timezone.utc)
             except Exception:
                 return None
 
-        dt_main = to_dt(x_pos)
+        dt_gps = to_dt(x_pos)
 
-        # Формируем заголовок времени
-        if time_type == 'GPS' and dt_main:
-            date_str = dt_main.strftime('%Y-%m-%d')
-            time_str = dt_main.strftime('%H:%M:%S')
-            info_text = f"Дата (GPS): {date_str}\nВремя (GPS): {time_str}\n\n"
+        # Заголовок и TimeUS, и GPS
+        info_lines = []
+        info_lines.append(f"TimeUS: {x_pos:.3f} сек")
+
+        if dt_gps:
+            info_lines.append(f"Дата GPS:  {dt_gps.strftime('%Y-%m-%d')}")
+            info_lines.append(f"Время GPS: {dt_gps.strftime('%H:%M:%S')}")
         else:
-            info_text = f"Время: {x_pos:.3f} сек\n\n"
+            info_lines.append("GPS: недоступно")
+
+        info_lines.append("")
 
         active_plot = self.plot_widget.active_plot
 
         # Активный график
         if active_plot and active_plot in parameter_values:
             active_data = parameter_values[active_plot]
-            dt_point = to_dt(active_data['x'])
+            dt_gps_point = to_dt(active_data['x'])
 
-            info_text += f"► Активный график ({active_plot}):\n"
-            info_text += f"   Значение: {active_data['y']:.6f}\n"
-
-            if time_type == 'GPS' and dt_point:
-                info_text += f"   Время: {dt_point.strftime('%H:%M:%S')}\n\n"
-            else:
-                info_text += f"   Время: {active_data['x']:.3f} сек\n\n"
+            info_lines.append(f"► Активный график ({active_plot}):")
+            info_lines.append(f"   Значение: {active_data['y']:.6f}")
+            info_lines.append(f"   TimeUS:   {active_data['x']:.3f} сек")
+            if dt_gps_point:
+                info_lines.append(f"   GPS:      {dt_gps_point.strftime('%H:%M:%S')}")
+            info_lines.append("")
 
         # Все графики
-        info_text += "Все графики:\n"
+        info_lines.append("Все графики:")
         for param_name, data in parameter_values.items():
             marker = "► " if param_name == active_plot else "  "
-            dt_point = to_dt(data['x'])
+            info_lines.append(
+                f"{marker}{param_name}: {data['y']:.6f} "
+                f"(TimeUS: {data['x']:.3f} сек)"
+            )
 
-            if time_type == 'GPS' and dt_point:
-                t_str = dt_point.strftime('%H:%M:%S')
-                info_text += (
-                    f"{marker}{param_name}: {data['y']:.6f} "
-                    f"(время: {t_str})\n"
-                )
-            else:
-                info_text += (
-                    f"{marker}{param_name}: {data['y']:.6f} "
-                    f"(время: {data['x']:.3f} сек)\n"
-                )
-
-        self.cursor_info_text.setText(info_text)
+        self.cursor_info_text.setText("\n".join(info_lines))
 
     def on_active_plot_changed(self, parameter_name):
         """Обработка изменения активного графика"""

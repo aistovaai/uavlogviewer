@@ -7,27 +7,24 @@ import numpy as np
 
 class TimeAxis(pg.AxisItem):
     """Ось времени, которая для GPS показывает HH:MM:SS."""
-    def __init__(self, get_time_type, *args, **kwargs):
-        """
-        get_time_type — функция без аргументов, возвращающая текущий тип времени
-        ('TimeUS', 'GPS', ...).
-        """
+    def __init__(self, get_time_type, get_time_offset, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._get_time_type = get_time_type
+        self._get_time_offset = get_time_offset
 
     def tickStrings(self, values, scale, spacing):
-            time_type = self._get_time_type()
-            if time_type == 'GPS':
-                labels = []
-                for v in values:
-                    try:
-                        dt = datetime.fromtimestamp(v, tz=timezone.utc)
-                        labels.append(dt.strftime('%H:%M:%S'))
-                    except Exception:
-                        labels.append('')
-                return labels
-            # для остальных типов — стандартная реализация
-            return super().tickStrings(values, scale, spacing)
+        time_type = self._get_time_type()
+        if time_type == 'GPS':
+            offset = self._get_time_offset() or 0.0
+            labels = []
+            for v in values:
+                try:
+                    dt = datetime.fromtimestamp(v + offset, tz=timezone.utc)
+                    labels.append(dt.strftime('%H:%M:%S'))
+                except Exception:
+                    labels.append('')
+            return labels
+        return super().tickStrings(values, scale, spacing)
     
 
 class CustomViewBox(pg.ViewBox):
@@ -65,6 +62,7 @@ class PlotWidget(QWidget):
         self.original_data = {}  # parameter_name: (original_x, original_y)
         self.scaling_applied = False  # Флаг масштабирования
         self.shift_offsets = {}  # parameter_name: {'x': 0.0, 'y': 0.0}
+        self.time_offset = 0.0  # смещение TimeUS -> GPS
         
         self.init_ui()
         
@@ -119,10 +117,11 @@ class PlotWidget(QWidget):
         # График с пользовательской осью времени
         self.time_axis = TimeAxis(
             get_time_type=lambda: self.time_type_combo.currentText(),
+            get_time_offset=lambda: self.time_offset,
             orientation='bottom'
         )
 
-        # Используем свой ViewBox с раздельным зумом
+        # ViewBox с раздельным зумом
         self.view_box = CustomViewBox()
         self.graph_widget = pg.PlotWidget(viewBox=self.view_box,
                                         axisItems={'bottom': self.time_axis})
@@ -282,7 +281,7 @@ class PlotWidget(QWidget):
             self.set_active_plot(parameter_name)
         else:
             # Для неактивных графиков делаем линию тоньше
-            plot.setPen(pg.mkPen(color, width=1))
+            plot.setPen(pg.mkPen(color, width=2))
 
         # Обновляем подпись даты, если активен GPS
         self.update_gps_date_label()
@@ -343,12 +342,12 @@ class PlotWidget(QWidget):
         if self.legend is not None:
             self.legend.clear()
 
-        # Вертикальная линия должна остаться и быть видимой
+        # Вертикальная линия
         if self.cursor_line is not None:
             self.cursor_line.setPos(0)
             self.cursor_line.setVisible(True)
 
-        # Обновляем подпись даты для GPS
+        # Подпись даты для GPS
         self.update_gps_date_label()
 
     
@@ -371,6 +370,8 @@ class PlotWidget(QWidget):
                     plot.setPen(pg.mkPen(color, width=2))  # Тоньше для неактивных
             
             self.active_plot_changed.emit(parameter_name)
+
+            self.auto_scale_y(parameter_name) # масштабирование
     
     def update_plot_color(self, parameter_name, color):
         """Обновляет цвет графика"""
@@ -673,10 +674,13 @@ class PlotWidget(QWidget):
 
     def _on_time_type_combo_changed(self, text: str):
         """Локальная обработка выбора типа времени."""
-        # прокидываем наверх в MainWindow
         self.time_type_changed.emit(text)
-        # обновляем подпись даты для GPS
         self.update_gps_date_label()
+
+        # обновление оси
+        axis = self.graph_widget.getPlotItem().getAxis('bottom')
+        axis.picture = None
+        axis.update()
 
     def update_gps_date_label(self):
         """Выводит один раз дату GPS на панели, когда выбрана шкала GPS."""
@@ -695,6 +699,11 @@ class PlotWidget(QWidget):
         if first_ts is None:
             self.gps_date_label.setText("Дата GPS: нет данных")
             return
-
-        dt = datetime.fromtimestamp(first_ts, tz=timezone.utc)
+        
+        offset = self.time_offset or 0.0
+        dt = datetime.fromtimestamp(first_ts + offset, tz=timezone.utc)
         self.gps_date_label.setText(f"Дата GPS: {dt.strftime('%Y-%m-%d')}")
+
+    def set_time_offset(self, offset: float):
+        self.time_offset = offset
+        self.update_gps_date_label()
