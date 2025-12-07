@@ -1,7 +1,53 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox, QLineEdit, QMessageBox
 from PyQt5.QtCore import Qt, pyqtSignal
+from datetime import datetime, timezone
 import pyqtgraph as pg
 import numpy as np
+
+
+class TimeAxis(pg.AxisItem):
+    """Ось времени, которая для GPS показывает HH:MM:SS."""
+    def __init__(self, get_time_type, *args, **kwargs):
+        """
+        get_time_type — функция без аргументов, возвращающая текущий тип времени
+        ('TimeUS', 'GPS', ...).
+        """
+        super().__init__(*args, **kwargs)
+        self._get_time_type = get_time_type
+
+    def tickStrings(self, values, scale, spacing):
+            time_type = self._get_time_type()
+            if time_type == 'GPS':
+                labels = []
+                for v in values:
+                    try:
+                        dt = datetime.fromtimestamp(v, tz=timezone.utc)
+                        labels.append(dt.strftime('%H:%M:%S'))
+                    except Exception:
+                        labels.append('')
+                return labels
+            # для остальных типов — стандартная реализация
+            return super().tickStrings(values, scale, spacing)
+    
+
+class CustomViewBox(pg.ViewBox):
+    """
+    ViewBox с раздельным зумом по осям:
+      - колесо мыши   -> зум только по X
+      - Shift + колесо -> зум только по Y
+    Панорамирование (drag) остаётся по обеим осям.
+    """
+    def wheelEvent(self, ev, axis=None):
+        mods = ev.modifiers()
+        # Если зажат Shift — зумим только по Y
+        if mods & Qt.ShiftModifier:
+            axis = 1   # 0 = X, 1 = Y
+        else:
+            # По умолчанию зумим только по X
+            axis = 0
+
+        super().wheelEvent(ev, axis=axis)
+
 
 class PlotWidget(QWidget):
     time_type_changed = pyqtSignal(str)
@@ -18,34 +64,45 @@ class PlotWidget(QWidget):
         self.cursor_points = {}  # Точки пересечения для каждого графика
         self.original_data = {}  # parameter_name: (original_x, original_y)
         self.scaling_applied = False  # Флаг масштабирования
+        self.shift_offsets = {}  # parameter_name: {'x': 0.0, 'y': 0.0}
         
         self.init_ui()
         
     def init_ui(self):
         """Инициализация интерфейса графика"""
         layout = QVBoxLayout(self)
-        
-        # Панель управления
+
+        # Панель управления сверху
         control_layout = QHBoxLayout()
-        
+
+        # Комбо для типа времени
         self.time_type_combo = QComboBox()
         self.time_type_combo.addItems(['TimeUS', 'GPS'])
-        self.time_type_combo.currentTextChanged.connect(self.time_type_changed.emit)
-        
-        self.active_plot_combo = QComboBox()  # Новый комбобокс для выбора активного графика
+        self.time_type_combo.currentTextChanged.connect(self._on_time_type_combo_changed)
+
+        # Комбо для активного графика
+        self.active_plot_combo = QComboBox()
         self.active_plot_combo.currentTextChanged.connect(self.on_active_plot_combo_changed)
-        
-        self.color_btn = QPushButton("Изменить цвет")  # Кнопка изменения цвета
+
+        # Кнопка смены цвета
+        self.color_btn = QPushButton("Изменить цвет")
         self.color_btn.clicked.connect(self.change_active_plot_color)
         self.color_btn.setEnabled(False)
-        
+
+        # Сброс масштаба всех
         self.reset_all_btn = QPushButton("Сбросить все")
         self.reset_all_btn.clicked.connect(self.reset_all_plots)
-        
+
+        # Сброс активного
         self.reset_active_btn = QPushButton("Сбросить активный")
         self.reset_active_btn.clicked.connect(self.reset_active_plot)
         self.reset_active_btn.setEnabled(False)
-        
+
+        # Лейбл даты GPS (год-месяц-день)
+        self.gps_date_label = QLabel("")
+        self.gps_date_label.setStyleSheet("color: gray; font-size: 10px;")
+
+        # Собираем control_layout
         control_layout.addWidget(QLabel("Ось времени:"))
         control_layout.addWidget(self.time_type_combo)
         control_layout.addWidget(QLabel("Активный график:"))
@@ -53,71 +110,120 @@ class PlotWidget(QWidget):
         control_layout.addWidget(self.color_btn)
         control_layout.addWidget(self.reset_all_btn)
         control_layout.addWidget(self.reset_active_btn)
+        control_layout.addWidget(self.gps_date_label)
         control_layout.addStretch()
-        
-        # Виджет графика
-        self.graph_widget = pg.PlotWidget()
+
+        # Добавляем шапку в основной layout
+        layout.addLayout(control_layout)
+
+        # График с пользовательской осью времени
+        self.time_axis = TimeAxis(
+            get_time_type=lambda: self.time_type_combo.currentText(),
+            orientation='bottom'
+        )
+
+        # Используем свой ViewBox с раздельным зумом
+        self.view_box = CustomViewBox()
+        self.graph_widget = pg.PlotWidget(viewBox=self.view_box,
+                                        axisItems={'bottom': self.time_axis})
         self.graph_widget.setBackground('w')
         self.graph_widget.showGrid(x=True, y=True, alpha=0.3)
         self.graph_widget.setLabel('left', 'Значение')
-        self.graph_widget.setLabel('bottom', 'Время', 'сек')
-        self.graph_widget.getPlotItem().setMouseEnabled(x=True, y=False)
-        
+        self.graph_widget.setLabel('bottom', 'Время')
+
         # Легенда
         self.legend = self.graph_widget.addLegend()
-        
+
         # Линия курсора
-        self.cursor_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#000000", width=1))
+        self.cursor_line = pg.InfiniteLine(
+            angle=90,
+            movable=False,
+            pen=pg.mkPen("#000000", width=1)
+        )
+        self.cursor_line.setVisible(False)
         self.graph_widget.addItem(self.cursor_line, ignoreBounds=True)
-        
-        # Подключаем события мыши
+
+        # События мыши
         self.graph_widget.scene().sigMouseMoved.connect(self.on_mouse_moved)
         self.graph_widget.scene().sigMouseClicked.connect(self.on_mouse_clicked)
 
-        # Устанавливаем начальную позицию
-        self.cursor_line.setPos(0)
-        
-        layout.addLayout(control_layout)
+        # Добавляем график в layout
         layout.addWidget(self.graph_widget)
 
-        # ПАНЕЛЬ МАСШТАБИРОВАНИЯ ДАННЫХ
+        # Панель масштабирования данных снизу
         scale_data_layout = QHBoxLayout()
-        
         scale_data_layout.addWidget(QLabel("Масштаб данных:"))
-        
+
         # Выбор оси
         self.scale_axis_combo = QComboBox()
         self.scale_axis_combo.addItems(["Ось X", "Ось Y"])
         scale_data_layout.addWidget(self.scale_axis_combo)
-        
-        # Выбор графика
+
+        # Выбор цели (активный / все)
         self.scale_target_combo = QComboBox()
         self.scale_target_combo.addItems(["Активный график", "Все графики"])
         scale_data_layout.addWidget(self.scale_target_combo)
-        
-        # Поле для коэффициента
+
+        # Коэффициент
         self.scale_factor_edit = QLineEdit()
         self.scale_factor_edit.setPlaceholderText("Коэффициент")
         self.scale_factor_edit.setMaximumWidth(80)
         self.scale_factor_edit.setText("1.0")
         scale_data_layout.addWidget(self.scale_factor_edit)
-        
-        # Кнопки применения
+
+        # Кнопки
         self.scale_apply_btn = QPushButton("Применить масштаб")
         self.scale_apply_btn.clicked.connect(self.apply_data_scaling)
         scale_data_layout.addWidget(self.scale_apply_btn)
-        
-        # Кнопка сброса масштаба
+
         self.scale_reset_btn = QPushButton("Сбросить масштаб")
         self.scale_reset_btn.clicked.connect(self.reset_data_scaling)
         scale_data_layout.addWidget(self.scale_reset_btn)
-        
+
         scale_data_layout.addStretch()
-        
-        layout.insertLayout(2, scale_data_layout)
-        
-        # Словарь для хранения исходных данных (до применения масшатбирования)
+
+        # Добавляем панель масштаба в самый низ
+        layout.addLayout(scale_data_layout)
+
+
+        # Панель сдвига данных снизу
+        shift_data_layout = QHBoxLayout()
+        shift_data_layout.addWidget(QLabel("Сдвиг данных:"))
+
+        # Ось
+        self.shift_axis_combo = QComboBox()
+        self.shift_axis_combo.addItems(["Ось X", "Ось Y"])
+        shift_data_layout.addWidget(self.shift_axis_combo)
+
+        # Цель
+        self.shift_target_combo = QComboBox()
+        self.shift_target_combo.addItems(["Активный график", "Все графики"])
+        shift_data_layout.addWidget(self.shift_target_combo)
+
+        # Величина сдвига
+        self.shift_value_edit = QLineEdit()
+        self.shift_value_edit.setPlaceholderText("Смещение")
+        self.shift_value_edit.setMaximumWidth(80)
+        self.shift_value_edit.setText("0.0")
+        shift_data_layout.addWidget(self.shift_value_edit)
+
+        # Кнопка "Применить"
+        self.shift_apply_btn = QPushButton("Применить сдвиг")
+        self.shift_apply_btn.clicked.connect(self.apply_data_shift)
+        shift_data_layout.addWidget(self.shift_apply_btn)
+
+        # Кнопка "Сбросить сдвиг"
+        self.shift_reset_btn = QPushButton("Сбросить сдвиг")
+        self.shift_reset_btn.clicked.connect(self.reset_data_shift)
+        shift_data_layout.addWidget(self.shift_reset_btn)
+
+        shift_data_layout.addStretch()
+
+        layout.addLayout(shift_data_layout)
+
+        # Словарь исходных данных (до масштабирования)
         self.original_data = {}  # parameter_name: (original_x, original_y)
+
     
     def on_active_plot_combo_changed(self, plot_name):
         """Обработка изменения активного графика через комбобокс"""
@@ -140,6 +246,9 @@ class PlotWidget(QWidget):
 
         # Сохраняем оригинальные данные
         self.original_data[parameter_name] = (x_data.copy(), y_data.copy())
+
+        # Инициализируем сдвиг для графика
+        self.shift_offsets[parameter_name] = {'x': 0.0, 'y': 0.0}
         
         # Создаем график
         plot = self.graph_widget.plot(x_data, y_data, 
@@ -174,6 +283,9 @@ class PlotWidget(QWidget):
         else:
             # Для неактивных графиков делаем линию тоньше
             plot.setPen(pg.mkPen(color, width=1))
+
+        # Обновляем подпись даты, если активен GPS
+        self.update_gps_date_label()
         
         # Автомасштабирование по Y для нового графика
         self.auto_scale_y(parameter_name)
@@ -206,6 +318,39 @@ class PlotWidget(QWidget):
                     self.color_btn.setEnabled(False)
                     self.reset_active_btn.setEnabled(False)
                     self.scaling_applied = False
+
+
+    def clear_all_plots(self):
+        """Полностью очищает все графики, но сохраняет оси, легенду и линию курсора"""
+        # Удаляем линии графиков
+        for plot in self.plots.values():
+            self.graph_widget.removeItem(plot)
+        # Удаляем маркеры курсора
+        for point in self.cursor_points.values():
+            self.graph_widget.removeItem(point)
+
+        self.plots.clear()
+        self.plot_data.clear()
+        self.plot_colors.clear()
+        self.cursor_points.clear()
+        self.original_data.clear()
+        self.shift_offsets.clear()
+
+        self.active_plot_combo.clear()
+        self.active_plot = None
+
+        # Очищаем легенду, но не удаляем её
+        if self.legend is not None:
+            self.legend.clear()
+
+        # Вертикальная линия должна остаться и быть видимой
+        if self.cursor_line is not None:
+            self.cursor_line.setPos(0)
+            self.cursor_line.setVisible(True)
+
+        # Обновляем подпись даты для GPS
+        self.update_gps_date_label()
+
     
     def set_active_plot(self, parameter_name):
         """Устанавливает активный график"""
@@ -370,6 +515,15 @@ class PlotWidget(QWidget):
             self.plots[parameter_name].setData(x_data, y_data)
 
 
+    def _get_parameters_to_modify(self, target: str):
+        """Возвращает список параметров для преобразования (масштаб/сдвиг)."""
+        if target == "Активный график" and self.active_plot:
+            return [self.active_plot]
+        elif target == "Все графики":
+            return list(self.plot_data.keys())
+        return []
+
+
     def apply_data_scaling(self):
         """Применяет масштабирование к данным графика"""
         try:
@@ -382,15 +536,7 @@ class PlotWidget(QWidget):
                 QMessageBox.warning(self, "Ошибка", "Коэффициент масштабирования не может быть равен 0")
                 return
             
-            # Определяем какие графики масштабировать
-            if target == "Активный график" and self.active_plot:
-                parameters_to_scale = [self.active_plot]
-            elif target == "Все графики":
-                parameters_to_scale = list(self.plot_data.keys())
-            else:
-                QMessageBox.warning(self, "Ошибка", "Нет активного графика для масштабирования")
-                return
-            
+            parameters_to_scale = self._get_parameters_to_modify(target)
             if not parameters_to_scale:
                 QMessageBox.warning(self, "Ошибка", "Нет графиков для масштабирования")
                 return
@@ -405,7 +551,7 @@ class PlotWidget(QWidget):
             for param_name in parameters_to_scale:
                 if param_name in self.plot_data:
                     # Получаем оригинальные данные
-                    curr_x, curr_y = self.original_data[param_name]
+                    curr_x, curr_y = self.plot_data[param_name]
                     
                     # Применяем масштабирование к выбранной оси
                     if axis == "Ось X":
@@ -421,9 +567,9 @@ class PlotWidget(QWidget):
 
             # Устанавливаем флаг, что масштабирование применялось
             self.scaling_applied = True
-            
-            # Обновляем отображение
-            self.update_scale_fields()
+
+            if axis == "Ось Y" and self.active_plot:
+                self.auto_scale_y(self.active_plot)
             
             # Показываем сообщение о примененном масштабировании
             axis_name = "X (время)" if axis == "Ось X" else "Y (значения)"
@@ -446,19 +592,109 @@ class PlotWidget(QWidget):
                 self.plots[param_name].setData(orig_x, orig_y)
 
         self.scaling_applied = False
-        
-        # Обновляем отображение
-        self.update_scale_fields()
+
+        # Автомасштаб по Y для активного
+        if self.active_plot:
+            self.auto_scale_y(self.active_plot)
         
         self.statusBar().showMessage("Масштабирование данных сброшено")
 
-    def update_scale_fields(self):
-        """Обновляет информацию о текущем масштабе"""
-        # Показываем информацию о масштабировании в статусной строке
-        if self.scaling_applied:
-            scaled_params = [p for p in self.plot_data.keys() if p in self.original_data]
-            if len(scaled_params) == 1 and self.active_plot in scaled_params:
-                status = f"Масштабирован: {self.active_plot}"
-            else:
-                status = f"Масштабировано графиков: {len(scaled_params)}"
-            self.statusBar().showMessage(status)
+
+    def apply_data_shift(self):
+        """Применяет сдвиг к данным графика (по X или Y)."""
+        try:
+            axis = self.shift_axis_combo.currentText()      # "Ось X" / "Ось Y"
+            target = self.shift_target_combo.currentText()  # "Активный график" / "Все графики"
+            shift_value = float(self.shift_value_edit.text())
+
+            parameters_to_shift = self._get_parameters_to_modify(target)
+            if not parameters_to_shift:
+                QMessageBox.warning(self, "Ошибка", "Нет графиков для сдвига")
+                return
+
+            for param_name in parameters_to_shift:
+                if param_name not in self.plot_data:
+                    continue
+
+                x_data, y_data = self.plot_data[param_name]
+                x_arr = np.array(x_data, dtype=float)
+                y_arr = np.array(y_data, dtype=float)
+
+                # Инициализируем запись для сдвига, если её ещё нет
+                if param_name not in self.shift_offsets:
+                    self.shift_offsets[param_name] = {'x': 0.0, 'y': 0.0}
+
+                if axis == "Ось X":
+                    x_arr = x_arr + shift_value
+                    self.shift_offsets[param_name]['x'] += shift_value
+                else:
+                    y_arr = y_arr + shift_value
+                    self.shift_offsets[param_name]['y'] += shift_value
+
+                # Обновляем данные графика
+                self.plot_data[param_name] = (x_arr, y_arr)
+                self.plots[param_name].setData(x_arr, y_arr)
+
+            # Немного подправим масштаб по Y, если двигали Y
+            if axis == "Ось Y" and self.active_plot:
+                self.auto_scale_y(self.active_plot)
+
+        except ValueError:
+            QMessageBox.warning(self, "Ошибка", "Введите корректное числовое значение сдвига")
+
+
+    def reset_data_shift(self):
+        """Сбрасывает сдвиг по всем графикам (возвращает их обратно без смещения)."""
+        if not self.shift_offsets:
+            QMessageBox.information(self, "Информация", "Сдвиг не применялся")
+            return
+
+        for param_name, offsets in self.shift_offsets.items():
+            if param_name not in self.plot_data:
+                continue
+
+            dx = offsets.get('x', 0.0)
+            dy = offsets.get('y', 0.0)
+
+            x_data, y_data = self.plot_data[param_name]
+            x_arr = np.array(x_data, dtype=float) - dx
+            y_arr = np.array(y_data, dtype=float) - dy
+
+            self.plot_data[param_name] = (x_arr, y_arr)
+            self.plots[param_name].setData(x_arr, y_arr)
+
+            # Обнуляем накопленные смещения
+            self.shift_offsets[param_name] = {'x': 0.0, 'y': 0.0}
+
+        # Можно поправить масштаб активного графика
+        if self.active_plot:
+            self.auto_scale_y(self.active_plot)
+
+
+    def _on_time_type_combo_changed(self, text: str):
+        """Локальная обработка выбора типа времени."""
+        # прокидываем наверх в MainWindow
+        self.time_type_changed.emit(text)
+        # обновляем подпись даты для GPS
+        self.update_gps_date_label()
+
+    def update_gps_date_label(self):
+        """Выводит один раз дату GPS на панели, когда выбрана шкала GPS."""
+        if self.time_type_combo.currentText() != 'GPS':
+            self.gps_date_label.setText("")
+            return
+
+        # Находим минимальный timestamp среди всех графиков
+        first_ts = None
+        for x_data, _ in self.plot_data.values():
+            if len(x_data) > 0:
+                ts = x_data[0]
+                if first_ts is None or ts < first_ts:
+                    first_ts = ts
+
+        if first_ts is None:
+            self.gps_date_label.setText("Дата GPS: нет данных")
+            return
+
+        dt = datetime.fromtimestamp(first_ts, tz=timezone.utc)
+        self.gps_date_label.setText(f"Дата GPS: {dt.strftime('%Y-%m-%d')}")

@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
                              QApplication, QColorDialog)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPalette, QColor, QIcon
+from datetime import datetime, timezone
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -295,28 +296,22 @@ class MainWindow(QMainWindow):
     
     def clear_all_plots(self):
         """Очистка всех графиков"""
-        # Очищаем графики
-        self.plot_widget.plots.clear()
-        self.plot_widget.plot_data.clear()
-        self.plot_widget.plot_colors.clear()
-        self.plot_widget.cursor_points.clear()
-        self.plot_widget.graph_widget.clear()
-        self.plot_widget.active_plot_combo.clear()
-        self.plot_widget.active_plot = None
-        
-        # Очищаем данные
+        # Очищаем графики через виджет
+        self.plot_widget.clear_all_plots()
+
+        # Очищаем данные в MainWindow
         self.current_plots.clear()
-        
+
         # Сбрасываем чекбоксы в дереве
         for checkbox in self.tree_widget.parameter_checkboxes.values():
             checkbox.setChecked(False)
-        
+
         # Обновляем интерфейс
         self.active_plot_label.setText("Активный график: нет")
         self.color_btn.setEnabled(False)
-        
+
         self.status_bar.showMessage("Все графики очищены")
-    
+
     def on_time_type_changed(self, time_type):
         """Обработка изменения типа времени"""
         if self.processor is None or not self.current_plots:
@@ -352,25 +347,62 @@ class MainWindow(QMainWindow):
         if not parameter_values:
             self.cursor_info_text.setText("Нет данных для отображения")
             return
-        
-        info_text = f"Время: {x_pos:.3f} сек\n\n"
-        
-        # Показываем значение активного графика
+
+        time_type = self.plot_widget.time_type_combo.currentText()
+
+        # Преобразование x_pos в datetime
+        def to_dt(ts):
+            """Конвертирует timestamp → UTC datetime (aware), безопасно."""
+            try:
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+            except Exception:
+                return None
+
+        dt_main = to_dt(x_pos)
+
+        # Формируем заголовок времени
+        if time_type == 'GPS' and dt_main:
+            date_str = dt_main.strftime('%Y-%m-%d')
+            time_str = dt_main.strftime('%H:%M:%S')
+            info_text = f"Дата (GPS): {date_str}\nВремя (GPS): {time_str}\n\n"
+        else:
+            info_text = f"Время: {x_pos:.3f} сек\n\n"
+
         active_plot = self.plot_widget.active_plot
+
+        # Активный график
         if active_plot and active_plot in parameter_values:
             active_data = parameter_values[active_plot]
+            dt_point = to_dt(active_data['x'])
+
             info_text += f"► Активный график ({active_plot}):\n"
             info_text += f"   Значение: {active_data['y']:.6f}\n"
-            info_text += f"   Время: {active_data['x']:.3f} сек\n\n"
-        
-        # Показываем значения всех графиков
+
+            if time_type == 'GPS' and dt_point:
+                info_text += f"   Время: {dt_point.strftime('%H:%M:%S')}\n\n"
+            else:
+                info_text += f"   Время: {active_data['x']:.3f} сек\n\n"
+
+        # Все графики
         info_text += "Все графики:\n"
         for param_name, data in parameter_values.items():
-            marker = "  " if param_name != active_plot else "► "
-            info_text += f"{marker}{param_name}: {data['y']:.6f} (время: {data['x']:.3f} сек)\n"
-        
+            marker = "► " if param_name == active_plot else "  "
+            dt_point = to_dt(data['x'])
+
+            if time_type == 'GPS' and dt_point:
+                t_str = dt_point.strftime('%H:%M:%S')
+                info_text += (
+                    f"{marker}{param_name}: {data['y']:.6f} "
+                    f"(время: {t_str})\n"
+                )
+            else:
+                info_text += (
+                    f"{marker}{param_name}: {data['y']:.6f} "
+                    f"(время: {data['x']:.3f} сек)\n"
+                )
+
         self.cursor_info_text.setText(info_text)
-    
+
     def on_active_plot_changed(self, parameter_name):
         """Обработка изменения активного графика"""
         self.active_plot_label.setText(f"Активный график: {parameter_name}")

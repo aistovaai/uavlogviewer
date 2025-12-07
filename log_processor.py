@@ -77,7 +77,7 @@ class LogProcessor:
             for message in messages:
                 ts = message['timestamp']
 
-                if 'TimeUs' in ts and 'GPS' not in ts:
+                if 'TimeUS' in ts and 'GPS' not in ts:
                     message['timestamp']['GPS'] = ts['TimeUS'] + self.time_offset
         
     
