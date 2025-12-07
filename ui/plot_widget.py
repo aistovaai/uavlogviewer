@@ -568,9 +568,6 @@ class PlotWidget(QWidget):
 
             # Устанавливаем флаг, что масштабирование применялось
             self.scaling_applied = True
-
-            if axis == "Ось Y" and self.active_plot:
-                self.auto_scale_y(self.active_plot)
             
             # Показываем сообщение о примененном масштабировании
             axis_name = "X (время)" if axis == "Ось X" else "Y (значения)"
@@ -593,10 +590,6 @@ class PlotWidget(QWidget):
                 self.plots[param_name].setData(orig_x, orig_y)
 
         self.scaling_applied = False
-
-        # Автомасштаб по Y для активного
-        if self.active_plot:
-            self.auto_scale_y(self.active_plot)
         
         self.statusBar().showMessage("Масштабирование данных сброшено")
 
@@ -636,10 +629,6 @@ class PlotWidget(QWidget):
                 self.plot_data[param_name] = (x_arr, y_arr)
                 self.plots[param_name].setData(x_arr, y_arr)
 
-            # Немного подправим масштаб по Y, если двигали Y
-            if axis == "Ось Y" and self.active_plot:
-                self.auto_scale_y(self.active_plot)
-
         except ValueError:
             QMessageBox.warning(self, "Ошибка", "Введите корректное числовое значение сдвига")
 
@@ -666,11 +655,6 @@ class PlotWidget(QWidget):
 
             # Обнуляем накопленные смещения
             self.shift_offsets[param_name] = {'x': 0.0, 'y': 0.0}
-
-        # Можно поправить масштаб активного графика
-        if self.active_plot:
-            self.auto_scale_y(self.active_plot)
-
 
     def _on_time_type_combo_changed(self, text: str):
         """Локальная обработка выбора типа времени."""
