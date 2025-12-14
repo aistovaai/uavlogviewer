@@ -61,7 +61,8 @@ class PlotWidget(QWidget):
         self.cursor_points = {}  # Точки пересечения для каждого графика
         self.original_data = {}  # parameter_name: (original_x, original_y)
         self.scaling_applied = False  # Флаг масштабирования
-        self.shift_offsets = {}  # parameter_name: {'x': 0.0, 'y': 0.0}
+        self.shift_original_data = {} # parameter_name: (original_x, original_y)
+        self.shift_applied = False
         self.time_offset = 0.0  # смещение TimeUS -> GPS
         
         self.init_ui()
@@ -87,12 +88,12 @@ class PlotWidget(QWidget):
         self.color_btn.clicked.connect(self.change_active_plot_color)
         self.color_btn.setEnabled(False)
 
-        # Сброс масштаба всех
-        self.reset_all_btn = QPushButton("Сбросить все")
+        # Сброс масштаба всех -> Фокус на всех
+        self.reset_all_btn = QPushButton("Фокус на всех")
         self.reset_all_btn.clicked.connect(self.reset_all_plots)
 
-        # Сброс активного
-        self.reset_active_btn = QPushButton("Сбросить активный")
+        # Сброс активного -> Фокус на активном
+        self.reset_active_btn = QPushButton("Фокус на активный")
         self.reset_active_btn.clicked.connect(self.reset_active_plot)
         self.reset_active_btn.setEnabled(False)
 
@@ -220,9 +221,6 @@ class PlotWidget(QWidget):
 
         layout.addLayout(shift_data_layout)
 
-        # Словарь исходных данных (до масштабирования)
-        self.original_data = {}  # parameter_name: (original_x, original_y)
-
     
     def on_active_plot_combo_changed(self, plot_name):
         """Обработка изменения активного графика через комбобокс"""
@@ -242,12 +240,6 @@ class PlotWidget(QWidget):
         """Добавляет новый график"""
         if parameter_name in self.plots:
             self.remove_plot(parameter_name)
-
-        # Сохраняем оригинальные данные
-        self.original_data[parameter_name] = (x_data.copy(), y_data.copy())
-
-        # Инициализируем сдвиг для графика
-        self.shift_offsets[parameter_name] = {'x': 0.0, 'y': 0.0}
         
         # Создаем график
         plot = self.graph_widget.plot(x_data, y_data, 
@@ -306,6 +298,7 @@ class PlotWidget(QWidget):
             del self.cursor_points[parameter_name]
             del self.plot_colors[parameter_name]
             del self.original_data[parameter_name]
+            del self.shift_original_data[parameter_name]
             
             if self.active_plot == parameter_name:
                 # Выбираем следующий доступный график
@@ -317,6 +310,7 @@ class PlotWidget(QWidget):
                     self.color_btn.setEnabled(False)
                     self.reset_active_btn.setEnabled(False)
                     self.scaling_applied = False
+                    self.shift_applied = False
 
 
     def clear_all_plots(self):
@@ -333,7 +327,10 @@ class PlotWidget(QWidget):
         self.plot_colors.clear()
         self.cursor_points.clear()
         self.original_data.clear()
-        self.shift_offsets.clear()
+        self.shift_original_data.clear()
+
+        self.scaling_applied = False
+        self.shift_applied = False
 
         self.active_plot_combo.clear()
         self.active_plot = None
@@ -597,8 +594,8 @@ class PlotWidget(QWidget):
     def apply_data_shift(self):
         """Применяет сдвиг к данным графика (по X или Y)."""
         try:
-            axis = self.shift_axis_combo.currentText()      # "Ось X" / "Ось Y"
-            target = self.shift_target_combo.currentText()  # "Активный график" / "Все графики"
+            axis = self.shift_axis_combo.currentText()        # "Ось X" или "Ось Y"
+            target = self.shift_target_combo.currentText()    # "Активный график" или "Все графики"
             shift_value = float(self.shift_value_edit.text())
 
             parameters_to_shift = self._get_parameters_to_modify(target)
@@ -606,55 +603,57 @@ class PlotWidget(QWidget):
                 QMessageBox.warning(self, "Ошибка", "Нет графиков для сдвига")
                 return
 
+            # Сохраняем "оригинальные" данные до сдвига (если ещё не сохранены)
+            for param_name in parameters_to_shift:
+                if param_name not in self.shift_original_data and param_name in self.plot_data:
+                    x_data, y_data = self.plot_data[param_name]
+                    self.shift_original_data[param_name] = (np.array(x_data, dtype=float).copy(),
+                                                        np.array(y_data, dtype=float).copy())
+
+            # Применяем сдвиг
             for param_name in parameters_to_shift:
                 if param_name not in self.plot_data:
                     continue
 
-                x_data, y_data = self.plot_data[param_name]
-                x_arr = np.array(x_data, dtype=float)
-                y_arr = np.array(y_data, dtype=float)
-
-                # Инициализируем запись для сдвига, если её ещё нет
-                if param_name not in self.shift_offsets:
-                    self.shift_offsets[param_name] = {'x': 0.0, 'y': 0.0}
+                curr_x, curr_y = self.plot_data[param_name]
+                curr_x = np.array(curr_x, dtype=float)
+                curr_y = np.array(curr_y, dtype=float)
 
                 if axis == "Ось X":
-                    x_arr = x_arr + shift_value
-                    self.shift_offsets[param_name]['x'] += shift_value
-                else:
-                    y_arr = y_arr + shift_value
-                    self.shift_offsets[param_name]['y'] += shift_value
+                    new_x = curr_x + shift_value
+                    new_y = curr_y
+                else:  # "Ось Y"
+                    new_x = curr_x
+                    new_y = curr_y + shift_value
 
-                # Обновляем данные графика
-                self.plot_data[param_name] = (x_arr, y_arr)
-                self.plots[param_name].setData(x_arr, y_arr)
+                self.plot_data[param_name] = (new_x, new_y)
+                self.plots[param_name].setData(new_x, new_y)
+
+            self.shift_applied = True
+
+            axis_name = "X (время)" if axis == "Ось X" else "Y (значения)"
+            target_name = "активный график" if target == "Активный график" else "все графики"
+            self.statusBar().showMessage(f"Применен сдвиг {shift_value} по оси {axis_name} для {target_name}")
 
         except ValueError:
             QMessageBox.warning(self, "Ошибка", "Введите корректное числовое значение сдвига")
 
 
     def reset_data_shift(self):
-        """Сбрасывает сдвиг по всем графикам (возвращает их обратно без смещения)."""
-        if not self.shift_offsets:
+        """Сбрасывает сдвиг данных к оригинальным значениям (без вычитания) — аналогично reset_data_scaling."""
+        if not self.shift_applied:
             QMessageBox.information(self, "Информация", "Сдвиг не применялся")
             return
 
-        for param_name, offsets in self.shift_offsets.items():
-            if param_name not in self.plot_data:
-                continue
+        # Восстанавливаем оригинальные данные для всех графиков, для которых сохранён "оригинал до сдвига"
+        for param_name, (orig_x, orig_y) in self.shift_original_data.items():
+            if param_name in self.plot_data and param_name in self.plots:
+                self.plot_data[param_name] = (orig_x.copy(), orig_y.copy())
+                self.plots[param_name].setData(orig_x, orig_y)
 
-            dx = offsets.get('x', 0.0)
-            dy = offsets.get('y', 0.0)
+        self.shift_applied = False
+        self.statusBar().showMessage("Сдвиг данных сброшен")
 
-            x_data, y_data = self.plot_data[param_name]
-            x_arr = np.array(x_data, dtype=float) - dx
-            y_arr = np.array(y_data, dtype=float) - dy
-
-            self.plot_data[param_name] = (x_arr, y_arr)
-            self.plots[param_name].setData(x_arr, y_arr)
-
-            # Обнуляем накопленные смещения
-            self.shift_offsets[param_name] = {'x': 0.0, 'y': 0.0}
 
     def _on_time_type_combo_changed(self, text: str):
         """Локальная обработка выбора типа времени."""

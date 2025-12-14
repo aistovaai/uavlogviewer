@@ -38,9 +38,7 @@ class ParameterTreeWidget(QTreeWidget):
             msg_item = QTreeWidgetItem(self)
             msg_item.setText(0, msg_type)
             
-            # Добавляем информацию о доступных временных метках
-            time_info = f"Время: {', '.join(msg_info['available_timestamps'])}"
-            msg_item.setToolTip(0, f"{msg_info['description']}\n{time_info}")
+            msg_item.setToolTip(0, f"{msg_info['description']}")
             
             # Выделяем заголовок жирным
             font = QFont()
@@ -74,6 +72,12 @@ class ParameterTreeWidget(QTreeWidget):
                 
                 checkbox_layout.addWidget(checkbox)
                 checkbox_layout.setAlignment(checkbox, Qt.AlignCenter)
+
+                # Tooltip для поля (если есть описание в базе)
+                desc = field_info.get('description', '')
+                if desc:
+                    field_item.setToolTip(0, desc)
+                    checkbox_widget.setToolTip(desc)
                 
                 # Кнопка выбора цвета
                 color_button = QPushButton()

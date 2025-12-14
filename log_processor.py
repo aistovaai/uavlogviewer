@@ -2,6 +2,8 @@ from pymavlink import mavutil
 from collections import defaultdict
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any, Set, Union
+import json
+import os
 
 class LogProcessor:
     def __init__(self, logfile_path):
@@ -94,9 +96,20 @@ class LogProcessor:
     
 
     def _load_message_descriptions(self):
-        """неЗагружает описания сообщений MAVLink"""  # 2k? уточнить
+        """Загружает описания сообщений/полей MAVLink из JSON (MSG и MSG.FIELD)."""
         descriptions = {}
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            path = os.path.join(base_dir, "utils", "mavlink_params.json")
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    descriptions = json.load(f)
+            else:
+                print(f"Файл описаний не найден: {path}")
+        except Exception as e:
+            print(f"Не удалось загрузить описания MAVLink: {e}")
         return descriptions
+
     
     
     def get_parameter_data(self, parameter_name, time_type='TimeUS'):
@@ -162,15 +175,16 @@ class LogProcessor:
             
             # Собираем все поля из первого сообщения
             first_message_data = messages[0]['data']
-            print(first_message_data)
             for field_name in first_message_data.keys():
                 # Подсчитываем количество ненулевых значений
                 has_data = sum(1 for msg in messages 
                                 if msg['data'].get(field_name) is not None) > 0
                 
+                full_name = f"{msg_type}.{field_name}"
                 tree[msg_type]['fields'][field_name] = {
-                    'full_name': f"{msg_type}.{field_name}",
-                    'has_data': has_data
+                    'full_name': full_name,
+                    'has_data': has_data,
+                    'description': self.message_descriptions.get(full_name, "")
                 }
         
         # Преобразуем множества в списки

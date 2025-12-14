@@ -1,0 +1,19 @@
+{
+  "GPS": "Information received from GNSS systems attached to the autopilot",
+  
+  "GPS.TimeUS": "μs — Time since system startup",
+  "GPS.I": "instance — GPS instance number",
+  "GPS.Status": "enum — GPS Fix type (NO_GPS=0, NO_FIX=1, 2D=2, 3D=3, DGPS=4, RTK_FLOAT=5, RTK_FIXED=6)",
+  "GPS.GMS": "ms — milliseconds since start of GPS Week",
+  "GPS.GWk": "weeks since 5 Jan 1980",
+  "GPS.NSats": "satellites — number of satellites visible",
+  "GPS.HDop": "horizontal dilution of precision",
+  "GPS.Lat": "deglatitude — latitude",
+  "GPS.Lng": "deglongitude — longitude",
+  "GPS.Alt": "m — altitude",
+  "GPS.Spd": "m/s — ground speed",
+  "GPS.GCrs": "degheading — ground course",
+  "GPS.VZ": "m/s — vertical speed",
+  "GPS.Yaw": "degheading — vehicle yaw",
+  "GPS.U": "boolean — whether this GPS is in use"
+}
